@@ -36,7 +36,11 @@ def pad_sents(sents, pad_token):
 
     ### YOUR CODE HERE (~6 Lines)
 
+    max_length = max(len(s) for s in sents)
 
+    for s in sents:
+        padded_sentence = s + [pad_token] * (max_length - len(s))
+        sents_padded.append(padded_sentence)
 
     ### END YOUR CODE
 
@@ -106,3 +110,10 @@ def batch_iter(data, batch_size, shuffle=False):
         yield src_sents, tgt_sents
 
 
+# sentences = [['I', 'love', 'Python'],
+#  ['ChatGPT', 'helps', 'with', 'tough', 'coding', 'problems'],
+#  ['Natural', 'language', 'processing', 'is', 'really', 'fascinating', 'and', 'complex'],
+#  ['Learning', 'new', 'skills']]
+
+
+# print(pad_sents(sentences,"BRENO"))
