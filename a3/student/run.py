@@ -65,7 +65,6 @@ import torch
 import torch.nn.utils
 from torch.utils.tensorboard import SummaryWriter
 
-
 def evaluate_ppl(model, dev_data, batch_size=32):
     """ Evaluate perplexity on dev sentences
     @param model (NMT): NMT Model
@@ -163,7 +162,7 @@ def train(args: Dict):
     vocab_mask = torch.ones(len(vocab.tgt))
     vocab_mask[vocab.tgt['<pad>']] = 0
 
-    device = torch.device("cuda:0" if args['--cuda'] else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print('use device: %s' % device, file=sys.stderr)
 
     model = model.to(device)

@@ -21,6 +21,7 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
 
 from model_embeddings import ModelEmbeddings
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 Hypothesis = namedtuple('Hypothesis', ['value', 'score'])
 
@@ -203,11 +204,6 @@ class NMT(nn.Module):
         ###         https://pytorch.org/docs/stable/generated/torch.cat.html
         ###     Tensor Permute:
         ###         https://pytorch.org/docs/stable/generated/torch.permute.html
-
-
-
-
-
         ### END YOUR CODE
         return enc_hiddens, dec_init_state
 
@@ -228,7 +224,6 @@ class NMT(nn.Module):
         """
         # Chop off the <END> token for max length sentences.
         target_padded = target_padded[:-1]
-
         # Initialize the decoder state (hidden and cell)
         dec_state = dec_init_state
 
@@ -245,8 +240,11 @@ class NMT(nn.Module):
         ###         which should be shape (b, src_len, h),
         ###         where b = batch size, src_len = maximum source length, h = hidden size.
         ###         This is applying W_{attProj} to h^enc, as described in the PDF.
+        enc_hiddens_proj = self.att_projection(enc_hiddens)
         ###     2. Construct tensor `Y` of target sentences with shape (tgt_len, b, e) using the target model embeddings.
         ###         where tgt_len = maximum target sentence length, b = batch size, e = embedding size.
+        Y = torch.stack([self.model_embeddings.target(target_padded[: , col]) for col in range(len(target_padded[0]))])
+        Y = Y.permute(1,0,2)
         ###     3. Use the torch.split function to iterate over the time dimension of Y.
         ###         Within the loop, this will give you Y_t of shape (1, b, e) where b = batch size, e = embedding size.
         ###             - Squeeze Y_t into a tensor of dimension (b, e).
@@ -255,10 +253,19 @@ class NMT(nn.Module):
         ###               as well as the new combined output o_t.
         ###             - Append o_t to combined_outputs
         ###             - Update o_prev to the new o_t.
+        chunks = torch.split(Y, 1, dim=0)
+        for i, y_t in enumerate(chunks):
+            y_t = torch.squeeze(y_t)
+            ybar_t = torch.cat([y_t, o_prev], dim=1)
+            # FICA DE OLHO NISSO AQUI
+            dec_state, o_t, _ = self.step(ybar_t, dec_state, enc_hiddens,enc_hiddens_proj,enc_masks)
+            combined_outputs.append(o_t)
+            o_prev = o_t 
         ###     4. Use torch.stack to convert combined_outputs from a list length tgt_len of
         ###         tensors shape (b, h), to a single tensor shape (tgt_len, b, h)
         ###         where tgt_len = maximum target sentence length, b = batch size, h = hidden size.
         ###
+        combined_outputs = torch.stack(combined_outputs, dim=0)
         ### Note:
         ###    - When using the squeeze() function make sure to specify the dimension you want to squeeze
         ###      over. Otherwise, you will remove the batch dimension accidentally, if batch_size = 1.
@@ -274,13 +281,7 @@ class NMT(nn.Module):
         ###         https://pytorch.org/docs/stable/generated/torch.cat.html
         ###     Tensor Stacking:
         ###         https://pytorch.org/docs/stable/generated/torch.stack.html
-
-
-
-
-
-
-        ### END YOUR CODE
+        ### END YOUR CODEnn
 
         return combined_outputs
 
@@ -316,8 +317,14 @@ class NMT(nn.Module):
         ### YOUR CODE HERE (~3 Lines)
         ### TODO:
         ###     1. Apply the decoder to `Ybar_t` and `dec_state`to obtain the new dec_state.
+        dec_state = self.decoder(Ybar_t, dec_state)
         ###     2. Split dec_state into its two parts (dec_hidden, dec_cell)
+        dec_hidden, dec_cell = dec_state
         ###     3. Compute the attention scores e_t, a Tensor shape (b, src_len).
+        # h_dec^T x W_attproj x h_enc
+        # W_attproj x h_enc = enc_hiddens_proj        
+        e_t = torch.bmm(enc_hiddens_proj, dec_hidden.unsqueeze(2)).squeeze(2)
+        # print(e_t.shape)
         ###        Note: b = batch_size, src_len = maximum source length, h = hidden size.
         ###
         ###       Hints:
@@ -346,6 +353,7 @@ class NMT(nn.Module):
         ### YOUR CODE HERE (~6 Lines)
         ### TODO:
         ###     1. Apply softmax to e_t to yield alpha_t
+        alpha_t = nn.functional.softmax(e_t, dim=1)
         ###     2. Use batched matrix multiplication between alpha_t and enc_hiddens to obtain the
         ###         attention output vector, a_t.
         ###           - alpha_t is shape (b, src_len)
@@ -354,10 +362,15 @@ class NMT(nn.Module):
         ###           - You will need to do some squeezing and unsqueezing.
         ###     Note: b = batch size, src_len = maximum source length, h = hidden size.
         ###
+        alpha_t = alpha_t.unsqueeze(1)
+        # a_t = torch.squeeze(torch.bmm(alpha_t, enc_hiddens))
+        a_t = torch.bmm(alpha_t, enc_hiddens).squeeze(1)
         ###     3. Concatenate dec_hidden with a_t to compute tensor U_t
+        U_t = torch.cat([dec_hidden, a_t], dim=1)
         ###     4. Apply the combined output projection layer to U_t to compute tensor V_t
+        V_t = self.combined_output_projection(U_t)
         ###     5. Compute tensor O_t by first applying the Tanh function and then the dropout layer.
-        ###
+        O_t = self.dropout(torch.tanh(V_t))        
         ### Use the following docs to implement this functionality:
         ###     Softmax:
         ###         https://pytorch.org/docs/stable/generated/torch.nn.functional.softmax.html
@@ -369,8 +382,6 @@ class NMT(nn.Module):
         ###         https://pytorch.org/docs/stable/generated/torch.cat.html
         ###     Tanh:
         ###         https://pytorch.org/docs/stable/generated/torch.tanh.html
-
-
         ### END YOUR CODE
 
         combined_output = O_t
@@ -494,9 +505,10 @@ class NMT(nn.Module):
         """ Load the model from a file.
         @param model_path (str): path to model
         """
-        params = torch.load(model_path, map_location=lambda storage, loc: storage)
+        params = torch.load(model_path, map_location=lambda storage, loc: storage, weights_only=False)
         args = params['args']
         model = NMT(vocab=params['vocab'], **args)
+        model.to(device)
         model.load_state_dict(params['state_dict'])
 
         return model
